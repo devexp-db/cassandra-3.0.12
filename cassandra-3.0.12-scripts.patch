@@ -1,0 +1,371 @@
+From 52394ec4ba1f175fb113317dcc34eedaec80ee29 Mon Sep 17 00:00:00 2001
+From: Tomas Repik <trepik@redhat.com>
+Date: Wed, 10 May 2017 08:21:31 +0200
+Subject: [PATCH] scripts patch
+
+---
+ bin/cassandra               | 33 +++++++++++++++++----
+ bin/cassandra.in.sh         | 70 +++++++++++++++++++++------------------------
+ bin/cqlsh.py                | 14 +--------
+ bin/nodetool                | 10 +++----
+ bin/nodetool.in.sh          | 38 ++++++++++++++++++++++++
+ conf/cassandra-env.sh       | 25 ++++++++--------
+ tools/bin/cassandra-stress  |  2 ++
+ tools/bin/cassandra-stressd |  2 ++
+ 8 files changed, 120 insertions(+), 74 deletions(-)
+ create mode 100644 bin/nodetool.in.sh
+
+diff --git a/bin/cassandra b/bin/cassandra
+index 2dd0fe1..a648553 100755
+--- a/bin/cassandra
++++ b/bin/cassandra
+@@ -115,13 +115,13 @@ else
+     NUMACTL=""
+ fi
+ 
+-if [ -z "$CASSANDRA_CONF" -o -z "$CLASSPATH" ]; then
+-    echo "You must set the CASSANDRA_CONF and CLASSPATH vars" >&2
++if [ -z "$CASSANDRA_CONF" -o -z "$CLASSPATH" -o -z "$CASSANDRA_HOME" ]; then
++    echo "You must set the CASSANDRA_CONF, CASSANDRA_HOME and CLASSPATH vars" >&2
+     exit 1
+ fi
+ 
+-if [ -f "$CASSANDRA_CONF/cassandra-env.sh" ]; then
+-    . "$CASSANDRA_CONF/cassandra-env.sh"
++if [ -f "/usr/share/$CASSANDRA_HOME/cassandra-env.sh" ]; then
++    . "/usr/share/$CASSANDRA_HOME/cassandra-env.sh"
+ fi
+ 
+ # Special-case path variables.
+@@ -188,7 +188,7 @@ launch_service()
+     props="$3"
+     class="$4"
+     cassandra_parms="-Dlogback.configurationFile=logback.xml"
+-    cassandra_parms="$cassandra_parms -Dcassandra.logdir=$CASSANDRA_HOME/logs"
++    cassandra_parms="$cassandra_parms -Dcassandra.logdir=/var/log/$CASSANDRA_HOME"
+     cassandra_parms="$cassandra_parms -Dcassandra.storagedir=$cassandra_storagedir"
+ 
+     if [ "x$pidpath" != "x" ]; then
+@@ -210,6 +210,19 @@ launch_service()
+     return $?
+ }
+ 
++wait_for_service_available()
++{
++  host=$(head -1 /etc/hosts | cut -f1 -d' ')
++  port=$(cat $CASSANDRA_CONF/cassandra.yaml | grep native_transport_port | head -1 | cut -d' ' -f2)
++  if ! nc -z $host $port; then
++    # echo "Waiting for Cassandra to start..."
++    while ! nc -z $host $port; do
++       sleep 1
++    done
++    # echo "Cassandra is ready."
++  fi
++}
++
+ # Parse any command line options.
+ args=`getopt vfhp:bD:H:E: "$@"`
+ eval set -- "$args"
+@@ -267,6 +280,14 @@ fi
+ # Start up the service
+ launch_service "$pidfile" "$foreground" "$properties" "$classname"
+ 
+-exit $?
++ret=$?
++
++if [ 0$ret -ne "0" ]; then
++    exit $ret
++fi
++
++wait_for_service_available
++
++exit 0
+ 
+ # vi:ai sw=4 ts=4 tw=0 et
+diff --git a/bin/cassandra.in.sh b/bin/cassandra.in.sh
+index 228cef7..e4bcbd0 100644
+--- a/bin/cassandra.in.sh
++++ b/bin/cassandra.in.sh
+@@ -1,3 +1,4 @@
++#!/bin/bash
+ # Licensed to the Apache Software Foundation (ASF) under one
+ # or more contributor license agreements.  See the NOTICE file
+ # distributed with this work for additional information
+@@ -15,61 +16,54 @@
+ # limitations under the License.
+ 
+ if [ "x$CASSANDRA_HOME" = "x" ]; then
+-    CASSANDRA_HOME="`dirname "$0"`/.."
++    CASSANDRA_HOME="cassandra"
+ fi
+ 
+ # The directory where Cassandra's configs live (required)
+ if [ "x$CASSANDRA_CONF" = "x" ]; then
+-    CASSANDRA_CONF="$CASSANDRA_HOME/conf"
++    CASSANDRA_CONF="/etc/$CASSANDRA_HOME"
+ fi
+ 
+-# This can be the path to a jar file, or a directory containing the 
+-# compiled classes. NOTE: This isn't needed by the startup script,
+-# it's just used here in constructing the classpath.
+-cassandra_bin="$CASSANDRA_HOME/build/classes/main"
+-#cassandra_bin="$CASSANDRA_HOME/build/cassandra.jar"
+-
+ # the default location for commitlogs, sstables, and saved caches
+ # if not set in cassandra.yaml
+-cassandra_storagedir="$CASSANDRA_HOME/data"
+-
+-# JAVA_HOME can optionally be set here
+-#JAVA_HOME=/usr/local/jdk6
++cassandra_storagedir="/var/lib/$CASSANDRA_HOME/data"
+ 
+ # The java classpath (required)
+-CLASSPATH="$CASSANDRA_CONF:$cassandra_bin"
++CLASSPATH="$CASSANDRA_CONF"
+ 
+-for jar in "$CASSANDRA_HOME"/lib/*.jar; do
+-    CLASSPATH="$CLASSPATH:$jar"
+-done
+++DEPS=( cassandra/cassandra-all metrics slf4j/api guava snakeyaml commons-codec jackson/jackson-mapper-asl jackson/jackson-core-asl netty/netty-all lz4 logback/logback-classic logback/logback-core jna sigar high-scale-lib/high-scale-lib antlr3-runtime concurrentlinkedhashmap-lru commons-lang3 json_simple stream-lib caffeine snappy-java jBCrypt jctools )
+ 
+-# JSR223 - collect all JSR223 engines' jars
+-for jsr223jar in "$CASSANDRA_HOME"/lib/jsr223/*/*.jar; do
+-    CLASSPATH="$CLASSPATH:$jsr223jar"
++for dep in "${DEPS[@]}"; do
++    CLASSPATH="$CLASSPATH:`build-classpath $dep`"
+ done
+-# JSR223/JRuby - set ruby lib directory
+-if [ -d "$CASSANDRA_HOME"/lib/jsr223/jruby/ruby ] ; then
+-    export JVM_OPTS="$JVM_OPTS -Djruby.lib=$CASSANDRA_HOME/lib/jsr223/jruby"
+-fi
+-# JSR223/JRuby - set ruby JNI libraries root directory
+-if [ -d "$CASSANDRA_HOME"/lib/jsr223/jruby/jni ] ; then
+-    export JVM_OPTS="$JVM_OPTS -Djffi.boot.library.path=$CASSANDRA_HOME/lib/jsr223/jruby/jni"
+-fi
+-# JSR223/Jython - set python.home system property
+-if [ -f "$CASSANDRA_HOME"/lib/jsr223/jython/jython.jar ] ; then
+-    export JVM_OPTS="$JVM_OPTS -Dpython.home=$CASSANDRA_HOME/lib/jsr223/jython"
+-fi
+-# JSR223/Scala - necessary system property
+-if [ -f "$CASSANDRA_HOME"/lib/jsr223/scala/scala-compiler.jar ] ; then
+-    export JVM_OPTS="$JVM_OPTS -Dscala.usejavacp=true"
+-fi
+ 
+ # set JVM javaagent opts to avoid warnings/errors
+ if [ "$JVM_VENDOR" != "OpenJDK" -o "$JVM_VERSION" \> "1.6.0" ] \
+       || [ "$JVM_VERSION" = "1.6.0" -a "$JVM_PATCH_VERSION" -ge 23 ]
+ then
+-    JAVA_AGENT="$JAVA_AGENT -javaagent:$CASSANDRA_HOME/lib/jamm-0.3.0.jar"
++    JAVA_AGENT="$JAVA_AGENT -javaagent:`build-classpath jamm`"
+ fi
+ 
+-# Added sigar-bin to the java.library.path CASSANDRA-7838
+-JAVA_OPTS="$JAVA_OPTS:-Djava.library.path=$CASSANDRA_HOME/lib/sigar-bin"
++java_ver_output=`"${JAVA:-java}" -version 2>&1`
++jvm=`echo "$java_ver_output" | grep -A 1 'version' | awk 'NR==2 {print $1}'`
++case "$jvm" in
++    OpenJDK)
++        # this will be "64-Bit" or "32-Bit"
++        JVM_ARCH=`echo "$java_ver_output" | awk 'NR==3 {print $2}'`
++        ;;
++    "Java(TM)")
++        # this will be "64-Bit" or "32-Bit"
++        JVM_ARCH=`echo "$java_ver_output" | awk 'NR==3 {print $3}'`
++        ;;
++    *)
++        # Help fill in other JVM values
++        JVM_ARCH=unknown
++        ;;
++esac
++
++# Added libsigar.so to the java.library.path CASSANDRA-7838
++if [ "$JVM_ARCH" = "64-Bit" ]; then
++    JVM_OPTS="$JVM_OPTS -Djava.library.path=/usr/lib64:/usr/lib64/sigar"
++else
++    JVM_OPTS="$JVM_OPTS -Djava.library.path=/usr/lib:/usr/lib/sigar"
++fi
+diff --git a/bin/cqlsh.py b/bin/cqlsh.py
+index ea2190f..ee0f7ac 100644
+--- a/bin/cqlsh.py
++++ b/bin/cqlsh.py
+@@ -1,4 +1,4 @@
+-#!/bin/sh
++#!/usr/bin/python
+ # -*- mode: Python -*-
+ 
+ # Licensed to the Apache Software Foundation (ASF) under one
+@@ -17,18 +17,6 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-""":"
+-# bash code here; finds a suitable python interpreter and execs this file.
+-# prefer unqualified "python" if suitable:
+-python -c 'import sys; sys.exit(not (0x020700b0 < sys.hexversion < 0x03000000))' 2>/dev/null \
+-    && exec python "$0" "$@"
+-for pyver in 2.7; do
+-    which python$pyver > /dev/null 2>&1 && exec python$pyver "$0" "$@"
+-done
+-echo "No appropriate python interpreter found." >&2
+-exit 1
+-":"""
+-
+ from __future__ import with_statement
+ 
+ import cmd
+diff --git a/bin/nodetool b/bin/nodetool
+index b1cfba5..6c39c48 100755
+--- a/bin/nodetool
++++ b/bin/nodetool
+@@ -24,11 +24,11 @@ fi
+ 
+ if [ "x$CASSANDRA_INCLUDE" = "x" ]; then
+     # Locations (in order) to use when searching for an include file.
+-    for include in "`dirname "$0"`/cassandra.in.sh" \
+-                   "$HOME/.cassandra.in.sh" \
+-                   /usr/share/cassandra/cassandra.in.sh \
+-                   /usr/local/share/cassandra/cassandra.in.sh \
+-                   /opt/cassandra/cassandra.in.sh; do
++    for include in "`dirname "$0"`/nodetool.in.sh" \
++                   "$HOME/.nodetool.in.sh" \
++                   /usr/share/cassandra/nodetool.in.sh \
++                   /usr/local/share/cassandra/nodetool.in.sh \
++                   /opt/cassandra/nodetool.in.sh; do
+         if [ -r "$include" ]; then
+             . "$include"
+             break
+diff --git a/bin/nodetool.in.sh b/bin/nodetool.in.sh
+new file mode 100644
+index 0000000..ae622b7
+--- /dev/null
++++ b/bin/nodetool.in.sh
+@@ -0,0 +1,38 @@
++# Licensed to the Apache Software Foundation (ASF) under one
++# or more contributor license agreements.  See the NOTICE file
++# distributed with this work for additional information
++# regarding copyright ownership.  The ASF licenses this file
++# to you under the Apache License, Version 2.0 (the
++# "License"); you may not use this file except in compliance
++# with the License.  You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++if [ "x$CASSANDRA_HOME" = "x" ]; then
++    CASSANDRA_HOME="cassandra"
++fi
++
++# The directory where Cassandra's configs live (required)
++if [ "x$CASSANDRA_CONF" = "x" ]; then
++    CASSANDRA_CONF="/etc/$CASSANDRA_HOME"
++fi
++
++# the default location for commitlogs, sstables, and saved caches
++# if not set in cassandra.yaml
++cassandra_storagedir="/var/lib/$CASSANDRA_HOME/data"
++
++# The java classpath (required)
++CLASSPATH="$CASSANDRA_CONF"
++
++DEPS=( airline cassandra/cassandra-all guava javax.inject slf4j/api jackson/jackson-mapper-asl jackson/jackson-core-asl logback/logback-classic logback/logback-core commons-lang3 high-scale-lib/high-scale-lib antlr3-runtime metrics concurrentlinkedhashmap-lru snakeyaml commons-codec )
++
++for dep in "${DEPS[@]}"; do
++    CLASSPATH="$CLASSPATH:`build-classpath $dep`"
++done
++
+diff --git a/conf/cassandra-env.sh b/conf/cassandra-env.sh
+index 44fe110..6e70f89 100644
+--- a/conf/cassandra-env.sh
++++ b/conf/cassandra-env.sh
+@@ -89,20 +89,16 @@ calculate_heap_sizes()
+ # Determine the sort of JVM we'll be running on.
+ java_ver_output=`"${JAVA:-java}" -version 2>&1`
+ jvmver=`echo "$java_ver_output" | grep '[openjdk|java] version' | awk -F'"' 'NR==1 {print $2}'`
+-JVM_VERSION=${jvmver%_*}
+-JVM_PATCH_VERSION=${jvmver#*_}
++tmp=(${jvmver//_/ }) 
++JVM_VERSION=${tmp[0]}
++JVM_PATCH_VERSION=${tmp[1]}
+ 
+-if [ "$JVM_VERSION" \< "1.8" ] ; then
++if [ "$JVM_VERSION" \< "1.8" ] || [ "$JVM_PATCH_VERSION" -lt 40 ] ; then
+     echo "Cassandra 3.0 and later require Java 8u40 or later."
+     exit 1;
+ fi
+ 
+-if [ "$JVM_VERSION" \< "1.8" ] && [ "$JVM_PATCH_VERSION" -lt 40 ] ; then
+-    echo "Cassandra 3.0 and later require Java 8u40 or later."
+-    exit 1;
+-fi
+-
+-jvm=`echo "$java_ver_output" | grep -A 1 'java version' | awk 'NR==2 {print $1}'`
++jvm=`echo "$java_ver_output" | grep -A 1 'version' | awk 'NR==2 {print $1}'`
+ case "$jvm" in
+     OpenJDK)
+         JVM_VENDOR=OpenJDK
+@@ -122,7 +118,7 @@ case "$jvm" in
+ esac
+ 
+ #GC log path has to be defined here because it needs to access CASSANDRA_HOME
+-JVM_OPTS="$JVM_OPTS -Xloggc:${CASSANDRA_HOME}/logs/gc.log"
++JVM_OPTS="$JVM_OPTS -Xloggc:/var/log/$CASSANDRA_HOME/gc.log"
+ 
+ # Here we create the arguments that will get passed to the jvm when
+ # starting cassandra.
+@@ -232,7 +228,7 @@ JVM_OPTS="$JVM_OPTS -XX:+PerfDisableSharedMem"
+ JVM_OPTS="$JVM_OPTS -XX:CompileCommandFile=$CASSANDRA_CONF/hotspot_compiler"
+ 
+ # add the jamm javaagent
+-JVM_OPTS="$JVM_OPTS -javaagent:$CASSANDRA_HOME/lib/jamm-0.3.0.jar"
++JVM_OPTS="$JVM_OPTS -javaagent:`build-classpath jamm`"
+ 
+ # enable thread priorities, primarily so we can give periodic tasks
+ # a lower priority to avoid interfering with client workload
+@@ -311,7 +307,12 @@ fi
+ # Cassandra uses SIGAR to capture OS metrics CASSANDRA-7838
+ # for SIGAR we have to set the java.library.path
+ # to the location of the native libraries.
+-JVM_OPTS="$JVM_OPTS -Djava.library.path=$CASSANDRA_HOME/lib/sigar-bin"
++if [ "$JVM_ARCH" = "64-Bit" ]; then
++    JVM_OPTS="$JVM_OPTS -Djava.library.path=/usr/lib64:/usr/lib64/sigar"
++else
++    JVM_OPTS="$JVM_OPTS -Djava.library.path=/usr/lib:/usr/lib/sigar"
++fi
++
+ 
+ JVM_OPTS="$JVM_OPTS $MX4J_ADDRESS"
+ JVM_OPTS="$JVM_OPTS $MX4J_PORT"
+diff --git a/tools/bin/cassandra-stress b/tools/bin/cassandra-stress
+index 82a3eb5..ef7f130 100755
+--- a/tools/bin/cassandra-stress
++++ b/tools/bin/cassandra-stress
+@@ -49,6 +49,8 @@ if [ -z "$CLASSPATH" ]; then
+     exit 1
+ fi
+ 
++CLASSPATH="$CLASSPATH:`build-classpath cassandra-stress`"
++
+ "$JAVA" -server -ea -cp "$CLASSPATH" $JVM_OPTS \
+         -Dcassandra.storagedir="$cassandra_storagedir" \
+         -Dlogback.configurationFile=logback-tools.xml \
+diff --git a/tools/bin/cassandra-stressd b/tools/bin/cassandra-stressd
+index 48fbef6..f626ab9 100755
+--- a/tools/bin/cassandra-stressd
++++ b/tools/bin/cassandra-stressd
+@@ -50,6 +50,8 @@ if [ -z "$CLASSPATH" ]; then
+     exit 1
+ fi
+ 
++CLASSPATH="$CLASSPATH:`build-classpath cassandra-stress`"
++
+ case "$1" in
+   start)
+     echo "Starting $DESC: "
+-- 
+2.9.3
+

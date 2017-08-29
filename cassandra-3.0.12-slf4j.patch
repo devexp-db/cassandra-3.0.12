@@ -1,0 +1,25 @@
+From f08500fc76aeec7413ae3a7e808f71dadfe07ce8 Mon Sep 17 00:00:00 2001
+From: Tomas Repik <trepik@redhat.com>
+Date: Thu, 27 Apr 2017 11:39:17 +0200
+Subject: [PATCH] slf4j
+
+---
+ test/unit/org/apache/cassandra/utils/NoSpamLoggerTest.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/unit/org/apache/cassandra/utils/NoSpamLoggerTest.java b/test/unit/org/apache/cassandra/utils/NoSpamLoggerTest.java
+index 702fa98..fe5d58e 100644
+--- a/test/unit/org/apache/cassandra/utils/NoSpamLoggerTest.java
++++ b/test/unit/org/apache/cassandra/utils/NoSpamLoggerTest.java
+@@ -39,7 +39,7 @@ public class NoSpamLoggerTest
+ {
+     Map<Level, Queue<Pair<String, Object[]>>> logged = new HashMap<>();
+ 
+-   Logger mock = new SubstituteLogger(null)
++   Logger mock = new SubstituteLogger(null, null, true)
+    {
+ 
+        @Override
+-- 
+2.9.3
+
